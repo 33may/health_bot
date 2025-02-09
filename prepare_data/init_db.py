@@ -1,5 +1,7 @@
 import os
 import asyncio
+from collections import defaultdict
+
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 
 from sqlalchemy import text
@@ -29,18 +31,25 @@ def load_and_process_pdfs(data_dir: str):
     loader = DirectoryLoader(
         data_dir,
         glob="**/*.pdf",
-        loader_cls=PyPDFLoader
+        loader_cls=PyPDFLoader,
     )
     documents = loader.load()
-    processed_docs = []
+
+    grouped_docs = defaultdict(list)
     for doc in documents:
         source = doc.metadata.get("source", "unknown")
         file_name = os.path.basename(source)
+        grouped_docs[file_name].append(doc.page_content)
+
+    processed_docs = []
+    for file_name, pages in grouped_docs.items():
+        full_content = "\n".join(pages)
         doc_dict = {
             "name": file_name.replace(".pdf", ""),
-            "content": doc.page_content
+            "content": full_content
         }
         processed_docs.append(doc_dict)
+
     return processed_docs
 
 
