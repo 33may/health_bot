@@ -14,7 +14,6 @@ async def main():
     #
     # url = "https://openrouter.ai/api/v1/chat/completions"
     # headers = {
-    #     "Authorization": f"Bearer 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",
     #     "Content-Type": "application/json"
     # }
     # payload = {
