@@ -62,4 +62,43 @@ def split_doc(document: dict, size = 1000, overlap = 200):
         "chunks": chunks
     }
 
+async def retrieve_similar_documents(query: str, limit_docs: int = 3, limit_chunks: int = 20):
+    async with open_async_connection() as session:
+        embedding = compute_embedding(query)
+
+        similarity_column = Chunks.embedding.cosine_distance(embedding)
+
+        chunks_stmt = (
+            select(Chunks.doc_id, similarity_column.label("similarity_score"))
+            .order_by(similarity_column.asc())
+            .limit(limit_chunks)
+        )
+
+        chunks = (await session.execute(chunks_stmt)).fetchall()
+
+        documents = {}
+        for chunk in chunks:
+            doc_id = chunk[0]
+            documents.setdefault(doc_id, {"score": 0})
+            documents[doc_id]["score"] += (1 - chunk[1])
+
+        top_docs = [doc_id for doc_id, score in sorted(documents.items(), key=lambda item: item[1]["score"], reverse=True)][:limit_docs]
+
+        docs_stmt = (
+            select(Documents)
+            .where(Documents.id.in_(top_docs))
+        )
+
+        documents = (await session.execute(docs_stmt)).fetchall()
+
+        return documents
+
+
+
+
+
+
+
+
+
 
