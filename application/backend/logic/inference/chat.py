@@ -4,6 +4,10 @@ import os
 from dotenv import load_dotenv
 
 def interact_chat_model(context, stream=True):
+    """
+    Отправляет контекст разговора на OpenRouter API с параметром stream=True
+    и генерирует (yield) полученные токены по мере их поступления.
+    """
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     # Загружаем переменные окружения
@@ -14,52 +18,44 @@ def interact_chat_model(context, stream=True):
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
+
     payload = {
         "model": "google/gemini-2.0-flash-thinking-exp:free",
         "messages": context,
         "include_reasoning": True,
-        "stream": stream
+        "stream": True
     }
 
-    if stream:
-        response = requests.post(url, headers=headers, json=payload, stream=True)
-        response.encoding = 'utf-8'
-        buffer = ""
-        content = ""
-        # Читаем ответ частями
-        for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
-            buffer += chunk
-            while True:
-                line_end = buffer.find('\n')
-                if line_end == -1:
-                    break
-                line = buffer[:line_end].strip()
-                buffer = buffer[line_end + 1:]
-                if line.startswith('data: '):
-                    data = line[6:]
-                    if data == '[DONE]':
-                        break
-                    try:
-                        data_obj = json.loads(data)
-                        # Извлекаем "токен" из дельты
-                        token = data_obj["choices"][0]["delta"].get("content")
-                        if token:
-                            print(token, end="", flush=True)
-                            content += token
-                    except json.JSONDecodeError:
-                        # Если не получилось распарсить JSON, пропускаем строку
-                        pass
-        print()  # Добавляем перевод строки после завершения потока
-        return content
-    else:
-        response = requests.post(url, headers=headers, json=payload)
-        response.encoding = 'utf-8'
-        data_obj = response.json()
-        content = data_obj["choices"][0]["message"]["content"]
-        return content
+    response = requests.post(url, headers=headers, json=payload, stream=True)
+    response.encoding = 'utf-8'
+    buffer = ""
 
-def chat_model():
-    system_message = {
+    # Читаем ответ по частям и генерируем полученные токены
+    for chunk in response.iter_content(chunk_size=256, decode_unicode=True):
+        buffer += chunk
+        while True:
+            line_end = buffer.find('\n')
+            if line_end == -1:
+                break
+            line = buffer[:line_end].strip()
+            buffer = buffer[line_end + 1:]
+            if line.startswith('data: '):
+                data = line[6:]
+                if data == '[DONE]':
+                    return
+                try:
+                    data_obj = json.loads(data)
+                    token = data_obj["choices"][0]["delta"].get("content")
+                    if token:
+                        yield token
+                except json.JSONDecodeError:
+                    continue
+
+def get_system_message():
+    """
+    Returns the system prompt (instruction) for the assistant.
+    """
+    return {
         "role": "system",
         "content": (
             "You are an experienced healthcare specialist. Your responses must be provided exclusively in Ukrainian, "
@@ -68,12 +64,15 @@ def chat_model():
             "that your advice is general and does not replace consultation with a doctor. Strive to create compact and concise answers, "
             "avoiding unnecessary length while preserving all important details. \n\n"
             "When processing a user's query, apply the following rule: \n"
-            "– If the query is simple, containing a limited number of symptoms or not requiring in-depth analysis, provide a final answer in a natural, human-like manner. \n"
+            "– If the query is simple, containing a limited number of symptoms or not requiring in-depth analysis, provide a final answer in a natural, human-like manner in Markdown formatting. \n"
             "– If the query is complex—containing many details, multiple symptoms, or requiring an in-depth analysis of possible pathologies—do not produce a final human-like response. Instead, generate a concise summary prompt that aggregates all relevant details from the entire conversation into a single query. This summary prompt will be used to retrieve additional documents from a vector database. \n\n"
             "The summary prompt must begin with the marker [RAG] and include only the essential details required for document retrieval, without any extra conversational commentary. \n\n"
             "Adhere to these rules to optimize resource usage and answer formation."
         )
     }
+
+def chat_model():
+    system_message = get_system_message()
 
     chat_history = [system_message]
 
