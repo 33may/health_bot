@@ -4,9 +4,12 @@ import {useChatWs} from "../hooks/UseChatWs.ts";
 
 const ChatPage: React.FC = () => {
   const [input, setInput] = useState<string>("");
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const {messages, sendMessage} = useChatWs()
+
+    console.log(messages)
 
   return (
     <div className="min-h-screen bg-gray-100 p-4">

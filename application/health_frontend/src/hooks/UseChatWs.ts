@@ -43,16 +43,22 @@ export function useChatWs() {
     };
   }, []);
 
-  const sendMessage = (userInput: string) => {
-    if (ws && userInput) {
-        const new_message: ChatMessage = {
-            role: "assistant",
-            content: userInput
-        };
-        setMessages((prev) => [...prev, new_message]);
-        ws.send(JSON.stringify(messages));
-    }
-  };
+const sendMessage = (userInput: string) => {
+  if (ws && userInput) {
+    setMessages((prev) => {
+      const newMessage: ChatMessage = {
+        role: "user",
+        content: userInput,
+      };
+      const updated = [...prev, newMessage];
+
+      ws.send(JSON.stringify(updated));
+
+      return updated;
+    });
+  }
+};
+
 
   return { messages, sendMessage };
 }

@@ -3,6 +3,12 @@ import requests
 import os
 from dotenv import load_dotenv
 
+import json
+import os
+import requests
+from dotenv import load_dotenv
+from loguru import logger  # Импортируем loguru
+
 def interact_chat_model(context, stream=True):
     """
     Отправляет контекст разговора на OpenRouter API с параметром stream=True
@@ -10,7 +16,6 @@ def interact_chat_model(context, stream=True):
     """
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    # Загружаем переменные окружения
     load_dotenv()
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -19,6 +24,8 @@ def interact_chat_model(context, stream=True):
         "Content-Type": "application/json"
     }
 
+    context.insert(0, get_system_message())
+
     payload = {
         "model": "google/gemini-2.0-flash-thinking-exp:free",
         "messages": context,
@@ -26,12 +33,15 @@ def interact_chat_model(context, stream=True):
         "stream": True
     }
 
+    logger.debug(f"Отправка запроса к OpenRouter: {json.dumps(payload, ensure_ascii=False, indent=2)}")
+
     response = requests.post(url, headers=headers, json=payload, stream=True)
     response.encoding = 'utf-8'
-    buffer = ""
 
-    # Читаем ответ по частям и генерируем полученные токены
-    for chunk in response.iter_content(chunk_size=256, decode_unicode=True):
+    buffer = ""
+    complete_response = ""  # Будем накапливать полный ответ
+
+    for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
         buffer += chunk
         while True:
             line_end = buffer.find('\n')
@@ -39,37 +49,40 @@ def interact_chat_model(context, stream=True):
                 break
             line = buffer[:line_end].strip()
             buffer = buffer[line_end + 1:]
+
             if line.startswith('data: '):
                 data = line[6:]
                 if data == '[DONE]':
+                    logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
                     return
+
                 try:
                     data_obj = json.loads(data)
                     token = data_obj["choices"][0]["delta"].get("content")
                     if token:
+                        complete_response += token
                         yield token
                 except json.JSONDecodeError:
                     continue
 
+
 def get_system_message():
-    """
-    Returns the system prompt (instruction) for the assistant.
-    """
     return {
         "role": "system",
         "content": (
             "You are an experienced healthcare specialist. Your responses must be provided exclusively in Ukrainian, "
-            "in a natural, detailed, and friendly manner. Do not answer with mere lists or short bullet points; instead, explain in depth, "
-            "providing examples and recommendations. If the user asks questions about symptoms or health conditions, be sure to emphasize "
-            "that your advice is general and does not replace consultation with a doctor. Strive to create compact and concise answers, "
-            "avoiding unnecessary length while preserving all important details. \n\n"
-            "When processing a user's query, apply the following rule: \n"
-            "– If the query is simple, containing a limited number of symptoms or not requiring in-depth analysis, provide a final answer in a natural, human-like manner in Markdown formatting. \n"
-            "– If the query is complex—containing many details, multiple symptoms, or requiring an in-depth analysis of possible pathologies—do not produce a final human-like response. Instead, generate a concise summary prompt that aggregates all relevant details from the entire conversation into a single query. This summary prompt will be used to retrieve additional documents from a vector database. \n\n"
-            "The summary prompt must begin with the marker [RAG] and include only the essential details required for document retrieval, without any extra conversational commentary. \n\n"
-            "Adhere to these rules to optimize resource usage and answer formation."
+            "in a natural, detailed, and friendly manner. Do not answer with mere lists or short bullet points; instead, provide comprehensive explanations with examples and recommendations. If the user asks questions about symptoms or health conditions, be sure to emphasize that your advice is general and does not replace consultation with a doctor. Strive to produce concise yet complete answers that capture all important details without unnecessary length.\n\n"
+
+            "When processing a user's query, follow these guidelines:\n"
+            "– If the query is simple—containing a limited number of symptoms or not requiring in-depth analysis—generate a final answer in a natural, human-like manner using complete Markdown formatting.\n"
+            "– If the query is complex—containing many details, multiple symptoms, or requiring an in-depth analysis of possible pathologies—do not generate a final human-like answer. Instead, produce a concise summary prompt that aggregates all relevant details from the entire conversation into a single query. This summary prompt must begin with the marker [RAG] and include only the essential details required for document retrieval, without any extra commentary.\n\n"
+
+            "Additionally, **format your responses in complete Markdown**. Use headings (e.g., `##`, `###`), bold (`**text**`) and italic (`*text*`) formatting, lists (using '-' or '1.'), horizontal rules (`---`), and preserve line breaks and spacing so that the final response is displayed correctly in Markdown. Your answer should be entirely formatted in Markdown, following these guidelines.\n\n"
+
+            "Remember, your advice is general and cannot replace a visit to a doctor. Follow these rules to optimize resource usage and produce high-quality, fully Markdown-formatted answers."
         )
     }
+
 
 def chat_model():
     system_message = get_system_message()
