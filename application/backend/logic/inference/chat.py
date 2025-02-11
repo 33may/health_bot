@@ -11,6 +11,9 @@ import requests
 from dotenv import load_dotenv
 from loguru import logger
 
+from application.backend.Models.TokenObject import TokenObject
+
+
 def interact_chat_model(context, stream=True):
     """
     Отправляет контекст разговора на OpenRouter API с параметром stream=True
@@ -59,7 +62,7 @@ def interact_chat_model(context, stream=True):
                 if data == '[DONE]':
                     logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
                     logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
-                    return "rag" if rag_flag else "done", complete_response
+                    return TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done", content=complete_response)
 
                 try:
                     data_obj = json.loads(data)
@@ -70,7 +73,7 @@ def interact_chat_model(context, stream=True):
                     if token:
                         complete_response += token
                         if not rag_flag:
-                            yield token
+                            yield TokenObject(type="message", content=token)
                 except json.JSONDecodeError:
                     continue
 
@@ -108,9 +111,15 @@ def get_system_message():
     }
 
 
-# def chat(chat_history: List[object]):
-#     chat_model_interaction_result = interact_chat_model(chat_history)
-#     if chat_model_interaction_result[0] =="":
+def chat(chat_history: List[object]):
+    for token in interact_chat_model(chat_history, stream=True):
+        if token.type == "message":
+            yield token.content
+        elif token.type == "rag":
+            logger.debug("do rag logic")
+        elif token.type == "done":
+            logger.debug(f"Execution finished successfully \n{token["content"]}")
+
 
 
 def reasoning_model(prompt):
