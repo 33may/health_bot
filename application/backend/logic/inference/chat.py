@@ -1,4 +1,6 @@
 import json
+from typing import List
+
 import requests
 import os
 from dotenv import load_dotenv
@@ -7,7 +9,7 @@ import json
 import os
 import requests
 from dotenv import load_dotenv
-from loguru import logger  # Импортируем loguru
+from loguru import logger
 
 def interact_chat_model(context, stream=True):
     """
@@ -39,7 +41,9 @@ def interact_chat_model(context, stream=True):
     response.encoding = 'utf-8'
 
     buffer = ""
-    complete_response = ""  # Будем накапливать полный ответ
+    complete_response = ""
+
+    rag_flag = None
 
     for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
         buffer += chunk
@@ -53,15 +57,20 @@ def interact_chat_model(context, stream=True):
             if line.startswith('data: '):
                 data = line[6:]
                 if data == '[DONE]':
+                    logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
                     logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
-                    return
+                    return "rag" if rag_flag else "done", complete_response
 
                 try:
                     data_obj = json.loads(data)
                     token = data_obj["choices"][0]["delta"].get("content")
+                    # check first  chunk to determine if it is chat response or RAG
+                    if rag_flag is None:
+                        rag_flag = True if "[RAG]" in token else False
                     if token:
                         complete_response += token
-                        yield token
+                        if not rag_flag:
+                            yield token
                 except json.JSONDecodeError:
                     continue
 
@@ -99,24 +108,9 @@ def get_system_message():
     }
 
 
-def chat_model():
-    system_message = get_system_message()
-
-    chat_history = [system_message]
-
-    print("Вітаємо у чаті! Для виходу введіть 'exit'.")
-    while True:
-        user_message = input("Ви: ")
-        if user_message.lower() == "exit":
-            break
-
-        chat_history.append({"role": "user", "content": user_message})
-
-        print("Ассистент:", end=" ")
-        # Вызываем функцию с параметром stream=True, чтобы ответ выводился постепенно
-        answer = interact_chat_model(chat_history, stream=True)
-        chat_history.append({"role": "assistant", "content": answer})
-        print()  # Пустая строка для разделения диалогов
+# def chat(chat_history: List[object]):
+#     chat_model_interaction_result = interact_chat_model(chat_history)
+#     if chat_model_interaction_result[0] =="":
 
 
 def reasoning_model(prompt):
@@ -188,10 +182,3 @@ def multi_agent_chat(user_message):
 
     final_response, _ = chat_model(final_prompt, additional_context=True)
     return final_response
-
-
-# Пример использования:
-if __name__ == "__main__":
-    user_message = "У меня болит голова, что может быть причиной?"
-    response = multi_agent_chat(user_message)
-    print("Ответ:", response)
