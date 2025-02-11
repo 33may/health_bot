@@ -78,7 +78,22 @@ def get_system_message():
             "– If the query is complex—containing many details, multiple symptoms, or requiring an in-depth analysis of possible pathologies—do not generate a final human-like answer. Instead, produce a concise summary prompt that aggregates all relevant details from the entire conversation into a single query. This summary prompt must begin with the marker [RAG] and include only the essential details required for document retrieval, without any extra commentary.\n\n"
 
             "Additionally, **format your responses in complete Markdown**. Use headings (e.g., `##`, `###`), bold (`**text**`) and italic (`*text*`) formatting, lists (using '-' or '1.'), horizontal rules (`---`), and preserve line breaks and spacing so that the final response is displayed correctly in Markdown. Your answer should be entirely formatted in Markdown, following these guidelines.\n\n"
-
+            
+            "Here is one-shot example of mardown formating"
+            "## Header"
+            "some text with **bold** items"
+            "### List name:"
+            "- item1"
+            "- iem2"
+            "- item3"
+            
+            "### Second list name:"
+            "1. item1"
+            "2. iem2"
+            "3. item3"
+            
+            "Structure each new line with own header to increase readability"
+            
             "Remember, your advice is general and cannot replace a visit to a doctor. Follow these rules to optimize resource usage and produce high-quality, fully Markdown-formatted answers."
         )
     }
