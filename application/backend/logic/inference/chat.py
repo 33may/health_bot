@@ -12,9 +12,12 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from application.backend.Models.TokenObject import TokenObject
+from application.backend.database.database_functions import retrieve_similar_documents
+from application.backend.database.tables import Documents
+from application.backend.logic.embeddings.model import compute_embedding
 
 
-def interact_chat_model(context, stream=True):
+def interact_model(context, chat_model = True, stream=True):
     """
     Отправляет контекст разговора на OpenRouter API с параметром stream=True
     и генерирует (yield) полученные токены по мере их поступления.
@@ -29,10 +32,12 @@ def interact_chat_model(context, stream=True):
         "Content-Type": "application/json"
     }
 
-    context.insert(0, get_system_message())
+    context.insert(0, get_chat_system_message() if chat_model else get_reason_system_message())
+
+    model = "google/gemini-2.0-flash-thinking-exp:free" if chat_model else "deepseek/deepseek-r1:free"
 
     payload = {
-        "model": "google/gemini-2.0-flash-thinking-exp:free",
+        "model": model,
         "messages": context,
         "include_reasoning": True,
         "stream": True
@@ -43,6 +48,13 @@ def interact_chat_model(context, stream=True):
     response = requests.post(url, headers=headers, json=payload, stream=True)
     response.encoding = 'utf-8'
 
+    if chat_model:
+        return process_chat_response(response)
+    else:
+        return process_reason_response(response)
+
+
+def process_chat_response(response):
     buffer = ""
     complete_response = ""
 
@@ -62,7 +74,8 @@ def interact_chat_model(context, stream=True):
                 if data == '[DONE]':
                     logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
                     logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
-                    yield TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done",content=complete_response)
+                    yield TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done",
+                                                                                                          content=complete_response)
 
                 try:
                     data_obj = json.loads(data)
@@ -78,7 +91,44 @@ def interact_chat_model(context, stream=True):
                     continue
 
 
-def get_system_message():
+def process_reason_response(response):
+    buffer = ""
+    complete_response = ""
+
+    rag_flag = None
+
+    for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
+        buffer += chunk
+        while True:
+            line_end = buffer.find('\n')
+            if line_end == -1:
+                break
+            line = buffer[:line_end].strip()
+            buffer = buffer[line_end + 1:]
+
+            if line.startswith('data: '):
+                data = line[6:]
+                if data == '[DONE]':
+                    logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
+                    logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
+                    yield TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done",
+                                                                                                          content=complete_response)
+
+                try:
+                    data_obj = json.loads(data)
+                    token = data_obj["choices"][0]["delta"].get("content")
+                    # check first  chunk to determine if it is chat response or RAG
+                    if rag_flag is None:
+                        rag_flag = True if "[RAG]" in token else False
+                    if token:
+                        complete_response += token
+                        if not rag_flag:
+                            yield TokenObject(type="message", content=token)
+                except json.JSONDecodeError:
+                    continue
+
+
+def get_chat_system_message():
     return {
         "role": "system",
         "content": (
@@ -138,6 +188,16 @@ def get_system_message():
     }
 
 
+
+def get_reason_system_message():
+    return {
+        "role": "system",
+        "content": (
+            "reasoner model prompt"
+        )
+    }
+
+
 # def get_system_message():
 #     return {
 #         "role": "system",
@@ -171,14 +231,49 @@ def get_system_message():
 #     }
 
 
-def chat(chat_history: List[object]):
-    for token in interact_chat_model(chat_history, stream=True):
+async def chat(chat_history: List[object]):
+    for token in interact_model(chat_history, stream=True):
         if token.type == "message":
-            yield token.content
+            yield token
+        elif token.type == "reason":
+            logger.debug(f"return reason \n{token.content}")
+            yield token
         elif token.type == "rag":
             logger.debug(f"do rag logic \n{token.content}")
+
+            async for reason_token in rag_logic(token.content, chat_history):
+                yield reason_token
         elif token.type == "done":
             logger.debug(f"Execution finished successfully \n{token.content}")
+
+test_rag_query = "[RAG] High temperature, headaches, more then 39"
+
+async def rag_logic(rag_query, chat_history: List[object]):
+
+    retrieved_documents = await retrieve_docs(rag_query)
+
+    document_context = [f"Document Name: {document.name} \n Document Content: {document.content}" for document in retrieved_documents]
+
+    supporting_documents = "Supporting Documents:\n" + "\n\n".join(document_context)
+
+    chat_history.append({"role": "system", "content": supporting_documents})
+
+    logger.debug(f"Chat history: {chat_history}")
+
+    for token in interact_model(chat_history, chat_model=False, stream=True):
+        if token.type == "message":
+            yield token
+
+
+
+async def retrieve_docs(rag_query) -> List[Documents]:
+    rag_query = rag_query[5:]
+
+    return await retrieve_similar_documents(rag_query)
+
+
+
+
 
 
 def reasoning_model(prompt):
@@ -191,62 +286,4 @@ def reasoning_model(prompt):
     return "[Рассуждение с извлечёнными документами]"
 
 
-def retrieve_documents(query):
-    """
-    Функция RAG-системы для извлечения документов по запросу.
-    """
-    # Здесь можно реализовать поиск в базе данных или через API.
-    # Для примера возвращаем строку с документами.
-    return "[Документы, релевантные запросу: {}]".format(query)
 
-
-def is_reasoning_sufficient(reasoning_output):
-    """
-    Функция для оценки, достаточно ли получено рассуждение.
-    Можно анализировать длину ответа, наличие ключевых слов и т.п.
-    Для простоты примера возвращаем True, если вывод не пуст.
-    """
-    return bool(reasoning_output and reasoning_output.strip())
-
-
-def multi_agent_chat(user_message):
-    # 1. Получаем начальный ответ от чат-агента
-    initial_response, need_reasoning = chat_model(user_message)
-
-    # Если чат-агент уверен, что может ответить, возвращаем ответ
-    if not need_reasoning:
-        return initial_response
-
-    # 2. Если требуется дополнительное рассуждение, запускаем агента рассуждения с максимум 2 попытками
-    reasoning_attempts = 0
-    reasoning_output = ""
-
-    while reasoning_attempts < 2:
-        # Извлекаем документы через RAG-систему
-        documents = retrieve_documents(user_message)
-
-        # Формируем промпт для агента рассуждения: добавляем исходный запрос и извлечённые документы
-        prompt_for_reasoning = (
-            f"User query: {user_message}\n"
-            f"Documents: {documents}\n"
-            f"Provide reasoning or a better prompt."
-        )
-
-        # Получаем вывод от модели рассуждения
-        reasoning_output = reasoning_model(prompt_for_reasoning)
-
-        # Проверяем, достаточно ли рассуждение для генерации ответа
-        if is_reasoning_sufficient(reasoning_output):
-            break
-
-        reasoning_attempts += 1
-
-    # 3. Формируем итоговый промпт для чат-агента, добавляя вывод рассуждения
-    final_prompt = (
-        f"User query: {user_message}\n"
-        f"Reasoning output: {reasoning_output}\n"
-        f"Answer accordingly, considering the above context."
-    )
-
-    final_response, _ = chat_model(final_prompt, additional_context=True)
-    return final_response

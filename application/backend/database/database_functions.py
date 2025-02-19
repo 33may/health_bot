@@ -3,10 +3,12 @@ from typing import List
 
 from tqdm import tqdm
 
-from app.database.config import open_async_connection
-from app.database.tables import Documents, Chunks
-from app.embeddings.model import compute_embedding
+
 from sqlalchemy import select
+
+from application.backend.database.config import open_async_connection
+from application.backend.database.tables import Documents, Chunks
+from application.backend.logic.embeddings.model import compute_embedding
 
 
 async def add_documents(document_contents:  List[dict]):
@@ -89,7 +91,7 @@ async def retrieve_similar_documents(query: str, limit_docs: int = 3, limit_chun
             .where(Documents.id.in_(top_docs))
         )
 
-        documents = (await session.execute(docs_stmt)).fetchall()
+        documents = (await session.execute(docs_stmt)).scalars().all()
 
         return documents
 
