@@ -6,17 +6,17 @@ from tqdm import tqdm
 
 from sqlalchemy import select
 
-from application.backend.database.config import open_async_connection
+from application.backend.database.config import open_connection
 from application.backend.database.tables import Documents, Chunks
 from application.backend.logic.embeddings.model import compute_embedding
 
 
-async def add_documents(document_contents:  List[dict]):
-    async with open_async_connection() as session:
+def add_documents(document_contents:  List[dict]):
+    with open_connection() as session:
         for doc in tqdm(document_contents):
             splitted = split_doc(doc)
 
-            result = await session.execute(
+            result = session.execute(
                 select(Documents.id).where(Documents.name == splitted["name"])
             )
             existing_doc_id = result.scalar()
@@ -32,7 +32,7 @@ async def add_documents(document_contents:  List[dict]):
                 content=splitted["content"]
             )
             session.add(new_doc)
-            await session.flush()
+            session.flush()
 
             for chunk in splitted["chunks"]:
                 chunk_id = uuid.uuid4()
@@ -44,7 +44,7 @@ async def add_documents(document_contents:  List[dict]):
                 )
                 session.add(new_chunk)
 
-        await session.commit()
+        session.commit()
 
 def split_doc(document: dict, size = 1000, overlap = 200):
     content = document.get("content", "")
@@ -64,36 +64,49 @@ def split_doc(document: dict, size = 1000, overlap = 200):
         "chunks": chunks
     }
 
-async def retrieve_similar_documents(query: str, limit_docs: int = 3, limit_chunks: int = 20):
-    async with open_async_connection() as session:
-        embedding = compute_embedding(query)
 
+def retrieve_similar_documents(query: str, limit_docs: int = 3, limit_chunks: int = 20):
+    with open_connection() as session:
+        embedding = compute_embedding(query)
         similarity_column = Chunks.embedding.cosine_distance(embedding)
 
+        # Get chunk information with document IDs
         chunks_stmt = (
             select(Chunks.doc_id, similarity_column.label("similarity_score"))
             .order_by(similarity_column.asc())
             .limit(limit_chunks)
         )
+        chunks = session.execute(chunks_stmt).fetchall()
 
-        chunks = (await session.execute(chunks_stmt)).fetchall()
-
+        # Process scores
         documents = {}
         for chunk in chunks:
             doc_id = chunk[0]
             documents.setdefault(doc_id, {"score": 0})
             documents[doc_id]["score"] += (1 - chunk[1])
 
-        top_docs = [doc_id for doc_id, score in sorted(documents.items(), key=lambda item: item[1]["score"], reverse=True)][:limit_docs]
+        # Get top document IDs
+        top_docs = sorted(documents.items(),
+                          key=lambda item: item[1]["score"],
+                          reverse=True)[:limit_docs]
+        doc_ids = [doc_id for doc_id, _ in top_docs]
 
+        # Load document data as dictionaries
         docs_stmt = (
-            select(Documents)
-            .where(Documents.id.in_(top_docs))
+            select(
+                Documents.id,
+                Documents.name,
+                Documents.content
+            )
+            .where(Documents.id.in_(doc_ids))
         )
 
-        documents = (await session.execute(docs_stmt)).scalars().all()
+        documents_data = [
+            {"id": id, "name": name, "content": content}
+            for id, name, content in session.execute(docs_stmt)
+        ]
 
-        return documents
+        return documents_data
 
 
 

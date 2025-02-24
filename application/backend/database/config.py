@@ -1,25 +1,33 @@
 import os
-from typing import Any, AsyncGenerator
+from typing import Any, Generator
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from contextlib import contextmanager
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from contextlib import asynccontextmanager
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://may:may@localhost/storage")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://may:may@localhost/storage")
+engine = create_engine(DATABASE_URL, echo=True)
 
-engine = create_async_engine(DATABASE_URL, echo=True)
-
-async_session = sessionmaker(
-    engine, expire_on_commit=False, class_=AsyncSession
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
 )
 
-@asynccontextmanager
-async def open_async_connection() -> AsyncGenerator[Any, Any]:
+@contextmanager
+def open_connection() -> Generator[Session, Any, None]:
     """
-    Async context manager that yields an AsyncSession.
+    Synchronous context manager that yields a database Session
     Usage:
-        async with open_async_connection() as session:
+        with open_connection() as session:
             # use session for database operations
     """
-    async with async_session() as session:
+    session = SessionLocal()
+    try:
         yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

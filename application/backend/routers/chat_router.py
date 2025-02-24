@@ -20,12 +20,13 @@ async def websocket_endpoint(websocket: WebSocket):
             data_list = json.loads(data_str)
             logger.debug(f"Received data: {data_list}")
 
+
             async for token in chat(data_list):
-                # await websocket.send_text(json.dumps({
-                #     "type": token.type,
-                #     "content": token.content
-                # }))
-                await websocket.send_text(token.content)
+                await websocket.send_text(json.dumps({
+                    "type": token.type,
+                    "content": token.content
+                }))
+                # await websocket.send_text(token.content)
                 await asyncio.sleep(0)
 
     except WebSocketDisconnect:

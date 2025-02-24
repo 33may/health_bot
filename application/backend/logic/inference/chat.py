@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import List
 
@@ -17,7 +18,7 @@ from application.backend.database.tables import Documents
 from application.backend.logic.embeddings.model import compute_embedding
 
 
-def interact_model(context, chat_model = True):
+def interact_model(context, system_prompt, chat_model = True):
     """
     Отправляет контекст разговора на OpenRouter API с параметром stream=True
     и генерирует (yield) полученные токены по мере их поступления.
@@ -32,9 +33,9 @@ def interact_model(context, chat_model = True):
         "Content-Type": "application/json"
     }
 
-    context.insert(0, get_chat_system_message() if chat_model else get_reason_system_message())
+    context.insert(0, system_prompt)
 
-    model = "google/gemini-2.0-flash-thinking-exp:free" if chat_model else "deepseek/deepseek-r1:free"
+    model = "google/gemini-2.0-flash-thinking-exp:free" if chat_model else "deepseek/deepseek-r1"
 
     payload = {
         "model": model,
@@ -92,19 +93,9 @@ def process_chat_response(response):
 
 
 def process_reason_response(response):
-    # try:
-    #     data = response.json()
-    #
-    #     print(data)
-    #
-    #
-    #
-    #     # return TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done", content=complete_response)
-    # except Exception as e:
-    #     logger.error("Error processing reasoning response: ", e)
-
     buffer = ""
-    complete_response = ""
+    complete_thinking = ""
+    complete_message = ""
 
     for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
         buffer += chunk
@@ -118,17 +109,22 @@ def process_reason_response(response):
             if line.startswith('data: '):
                 data = line[6:]
                 if data == '[DONE]':
-                    logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
-                    logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
-                    yield TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done",
-                                                                                                          content=complete_response)
+                    logger.debug(f"Полный ответ от OpenRouter:\n{complete_thinking + complete_message}")
+                    if "[RAG}" in complete_message:
+                        yield TokenObject(type="rag", content=complete_message)
+                    yield TokenObject(type="done", content=complete_thinking + complete_message)
 
                 try:
                     data_obj = json.loads(data)
-                    token = data_obj["choices"][0]["delta"].get("content") if data_obj["choices"][0]["delta"].get("content") else data_obj["choices"][0]["delta"].get("reasoning") if data_obj["choices"][0]["delta"].get("reasoning") else None
-                    if token:
-                        complete_response += token
-                        yield TokenObject(type="message", content=token)
+                    token_type = "message" if data_obj["choices"][0]["delta"].get("content") else "think" if data_obj["choices"][0]["delta"].get("reasoning") else None
+                    token = data_obj["choices"][0]["delta"].get("content") if token_type == "message" else data_obj["choices"][0]["delta"].get("reasoning") if token_type == "think" else None
+                    if token and token_type:
+                        if token_type == "message":
+                            complete_message += token
+                        elif token_type == "think":
+                            complete_thinking += token
+
+                        yield TokenObject(type="think", content=token)
                 except json.JSONDecodeError:
                     continue
 
@@ -137,174 +133,255 @@ def get_chat_system_message():
     return {
         "role": "system",
         "content": (
-            "You are a medical research assistant that thinks through differential diagnosis systematically. "
-            "Refer to yourself using male pronouns if needed, but do not focus on your gender. "
-            "**Respond exclusively in Ukrainian** using natural, conversational language with light Markdown formatting.\n\n"
+            "You are a medical researcher performing systematic differential diagnosis analysis. "
+            "Use masculine gender for self-reference when needed but avoid emphasizing gender/personality. "
+            "**Respond exclusively in Ukrainian** using natural conversational language with Markdown, make the conversation natural chat. Greet person and be empatic in first message, in the following dont greet and dont spend too much time on emphatic.\n\n"
 
-            "Always address the user in a gender-neutral and respectful manner using 'ви'.\n\n"
+            "### **STRICT RULES FOR RAG USAGE:**\n"
+            "1. **RAG queries must be separate**\n"
+            "   - If additional lookup is required, respond **ONLY** with `[RAG] {query}` and NOTHING else.\n"
+            "   - **DO NOT** mix `[RAG]` with explanations, summaries, or any other text.\n"
+            "   - **If generating a normal response, DO NOT include `[RAG]` at all.**\n\n"
 
-            "### Core Principles:\n"
-            "1. **Adaptive Depth**\n"
-            "   - For simple queries (1-2 clear symptoms): Provide concise guidance with 2-3 actionable recommendations.\n"
-            "   - For complex cases (ambiguous/multiple symptoms): Initiate an investigative dialogue through thoughtful questioning.\n\n"
+            "2. **Response Depth & Adaptability:**\n"
+            "   - Simple cases (1-2 clear symptoms): Provide concise recommendations (2-3 key points).\n"
+            "   - Complex cases (ambiguous/multiple symptoms): Ask clarifying questions before suggesting conclusions.\n\n"
 
-            "2. **Research Methodology**\n"
-            "   - Ask questions to clarify:\n"
-            "     a) Symptom characteristics (timing, triggers, severity);\n"
-            "     b) Relevant medical history;\n"
-            "     c) Contextual factors.\n"
-            "   - Continue until 3-5 key data points are established.\n\n"
+            "3. **Safety Guidelines:**\n"
+            "   - Never provide definitive diagnoses.\n"
+            "   - Always advise the user to consult a doctor for proper evaluation.\n\n"
 
-            "3. **Explore Database**\n"
-            "   - Once you have gathered sufficient information, generate a query to retrieve supporting documents from the database.\n"
-            "   - **Important:** If a [RAG] query is required, your entire response must start with `[RAG] {rag query}` and contain no other text. "
-            "If the response has already begun with non-[RAG] content, do not include any `[RAG]` markers.\n\n"
+            "4. **Response Formatting:**\n"
+            "   - Use **bold** for medical terms (e.g., **мігрень**)\n"
+            "   - Separate responses with `---`\n"
+            "   - Maintain gender-neutral 'ви' address\n\n"
 
-            "4. **Communication Style**\n"
-            "   - Use natural phrasing between markdown elements.\n"
-            "   - Avoid unexplained medical jargon.\n"
-            "   - Never state definitive diagnoses.\n"
-            "   - Always include a safety disclaimer.\n\n"
-
-            "5. **Formatting Guidelines**\n"
-            "   - Bold for medical terms (e.g., **грип**).\n"
-            "   - Italicize examples (e.g., *парацетамол*).\n"
-            "   - Use lists for recommendations.\n"
-            "   - Insert horizontal rules between conversation turns.\n\n"
-
-            "Additionally, **format your responses in complete Markdown**. Use headings (e.g., `##`, `###`), bold (`**text**`) and italic (`*text*`) formatting, lists (using '-' or '1.'), horizontal rules (`---`), and preserve line breaks and spacing so that the final response is displayed correctly in Markdown.\n\n"
-
-            "Here is a one-shot example of Markdown formatting:\n"
+            "---\n"
+            "### **Examples: Correct vs Incorrect RAG Behavior**\n"
+            "** Correct RAG Query:** *(Only a RAG query, no extra text)*\n"
             "```\n"
-            "## Header\n"
-            "Some text with **bold** items\n"
-            "### List name:\n"
-            "- item1\n"
-            "- item2\n"
-            "- item3\n"
-            "```\n\n"
+            "[RAG] {Висока температура, слабкість, головний біль, м'язовий біль – можливі диференційні діагнози}\n"
+            "```\n"
+            "** Incorrect RAG Query (Forbidden Mixing of Text and RAG):**\n"
+            "```\n"
+            "Ваша температура та головний біль можуть свідчити про інфекційний процес. \n"
+            "[RAG] {Висока температура, слабкість, головний біль, м'язовий біль – можливі диференційні діагнози}\n"
+            "```\n"
+            "** ERROR: `[RAG]` must NEVER appear with normal text in the same response.**\n\n"
 
-            "Structure each new line with its own header to increase readability.\n\n"
+            "** Correct Response Without RAG (Standard Answer):**\n"
+            "```\n"
+            "Ваші симптоми можуть бути спричинені вірусною інфекцією або мігренню. \n"
+            "Будь ласка, уточніть:\n"
+            "- Чи є у вас чутливість до світла?\n"
+            "- Як довго триває головний біль?\n"
+            "```\n"
+            "** Incorrect RAG Response (RAG mixed with an answer):**\n"
+            "```\n"
+            "Ймовірно, це вірусна інфекція. Вам потрібно відпочити та стежити за гідратацією.\n"
+            "[RAG] {Температура 38°C, головний біль, слабкість – можливі причини}\n"
+            "```\n"
+            "** ERROR: Mixing `[RAG]` with recommendations is strictly forbidden.**\n\n"
 
-            "Remember, your advice is general and cannot replace a visit to a doctor. Follow these rules to optimize resource usage and produce high-quality, fully Markdown-formatted answers."
+            "Failure to follow these rules will cause system errors."
         )
     }
+
 
 
 def get_reason_system_message():
     return {
         "role": "system",
         "content": (
-            "You are a specialized medical analyst and expert in differential diagnosis responsible for synthesizing Always answer in Ukrainian"
-            "information from retrieved medical documents and patient symptom data. Your role is not to directly answer "
-            "the user, but to analyze the provided data, derive conclusions, and generate next steps. Your analysis will be used "
-            "by a chat model to generate the final response to the user.\n\n"
+            "You are a medical data analyst responsible for processing patient information and generating structured assessments. "
+            "Your task is to analyze available data systematically, incorporating retrieved medical documents where applicable, "
+            "to prepare a comprehensive final report.\n\n"
 
-            "### Core Responsibilities:\n"
-            "1. **Evidence Synthesis and Logical Analysis**\n"
-            "   - Integrate and evaluate information from provided documents and patient data, considering medical history and contextual factors.\n"
-            "   - Develop a coherent, logically structured analysis that outlines key data points, potential diagnoses, and areas of uncertainty.\n"
-            "   - Format your analysis in Markdown using headings (e.g., `##`, `###`), lists, bold, and italic text for clarity.\n\n"
+            "### **STRICT RULES FOR RAG USAGE:**\n"
+            "1. **RAG queries must be SEPARATE:**\n"
+            "   - If additional information is required, respond with **ONLY** `[RAG] {query}` and NOTHING else.\n"
+            "   - **DO NOT** mix `[RAG]` queries with explanations, summaries, or any other text.\n"
+            "   - **If generating a normal analysis, DO NOT include `[RAG]` at all.**\n\n"
 
-            "2. **[RAG] Query Generation**\n"
-            "   - If you determine that additional documents or evidence are necessary to confirm a potential diagnosis or resolve ambiguities, "
-            "output a separate query in the following format:\n"
-            "     `[RAG] {query text}`\n"
-            "   - The output must contain only the `[RAG]` marker and the query text, without any additional commentary or conclusions.\n"
-            "   - If multiple additional documents are needed, generate separate queries for each requirement.\n\n"
+            "2. **Analysis Protocol:**\n"
+            "   - Process and interpret patient symptoms and context.\n"
+            "   - Reference **retrieved medical documents** directly, linking relevant findings.\n"
+            "   - If 3-5 key data points are sufficient, proceed to conclusions.\n"
+            "   - Format the response in **Markdown** with clear sections.\n\n"
 
-            "3. **Final Reasoning Conclusion**\n"
-            "   - When all necessary information has been gathered, complete your analysis by providing a concise yet comprehensive summary that "
-            "includes key data points, potential diagnoses, and recommendations for next steps.\n"
-            "   - The final output must be entirely formatted in Markdown and will serve as the basis for the chat model's final response to the user.\n\n"
+            "3. **Language Requirements:**\n"
+            "   - **ALL** analysis must be in English.\n"
+            "   - Maintain a natural and conversational tone.\n\n"
 
-            "4. **Additional Questions**\n"
-            "   - If specific details from the documents suggest further areas of inquiry, include a section with additional targeted questions "
-            "to help refine your conclusions or clarify ambiguous data.\n"
-            "   - These questions should be clear and direct, prompting the retrieval of more relevant documents or additional data if needed.\n\n"
+            "4. **Final Summary Format:**\n"
+            "   - **Structured Patient Case Summary:**\n"
+            "     * **Known Patient Symptoms** (based on available data).\n"
+            "     * **Possible Diagnostic Considerations** (without definitive diagnosis).\n"
+            "     * **Key Follow-Up Questions** (to refine potential causes).\n\n"
 
-            "5. **Additional Instructions**\n"
-            "   - Follow a step-by-step, systematic approach in your analysis.\n"
-            "   - Clearly state any uncertainties or assumptions that could affect your conclusions.\n"
-            "   - Always include a disclaimer that your analysis is not a substitute for professional medical advice.\n"
-            "   - Output exclusively in English.\n"
-            "   - Your output should either be a [RAG] query (if additional documents are required) or a complete final analysis, but never a mix of both.\n\n"
+            "5. **If more data is needed:**\n"
+            "   - Respond **ONLY** with `[RAG] {query}` without any additional text.\n\n"
 
-            "### Example of Final Reasoning Output (if no additional documents are required):\n"
+            "### **Example of a Structured Final Analysis:**\n"
             "```\n"
-            "## Final Analysis\n"
-            "- **Key Data:** [List key data points]\n"
-            "- **Possible Diagnoses:** [List potential diagnoses]\n"
-            "- **Next Steps:** [Recommendations for further investigation or referral]\n"
+            "## Symptom Assessment\n"
+            "- **Primary Symptoms:** [List of reported symptoms]\n"
+            "- **Onset & Progression:** [Description of symptom development]\n"
+            "- **Relevant Context:** [Stress, medications, lifestyle factors]\n"
+            "\n"
+            "## Potential Causes\n"
+            "- **Possibility 1:** [Explanation]\n"
+            "- **Possibility 2:** [Explanation]\n"
+            "\n"
+            "## Key Follow-Up Questions\n"
+            "- Has the patient experienced [symptom X] before?\n"
+            "- Are there any changes in [factor Y]?\n"
+            "\n"
+            "## Recommended Next Steps\n"
+            "- **Consultation with a physician** is advised.\n"
+            "- **Warning signs requiring immediate attention:** [List of critical symptoms]\n"
             "```\n\n"
+            
+            "### **Example of a Structured Final RAG request:**\n"
+            "[RAG] Patient reports persistent headache with visual disturbances. Retrieve relevant medical literature on migraine differentials and potential neurological causes."
 
-            "Remember, your role is to assist the chat model by providing a well-reasoned analysis, not to directly answer the user. Your conclusions and any [RAG] queries will guide the final response."
+            "**Your goal is to critically evaluate data and generate a well-structured medical report.** "
+            "If additional data is required, respond **ONLY** with `[RAG] {query}` and nothing else."
+        )
+    }
+
+
+def get_final_chat_system_message():
+    return {
+        "role": "system",
+        "content": (
+            "You are a medical chat assistant responsible for delivering the final patient-facing response "
+            "based on the analysis provided by the reasoning model. Your job is to ensure that the patient receives "
+            "a clear, structured, and actionable response in Ukrainian.\n\n"
+
+            "### **Key Responsibilities:**\n"
+            "1. **Processing Analyst’s Input:**\n"
+            "   - You **DO NOT** generate or process `[RAG]` queries.\n"
+            "   - If the analyst provides a detailed reasoning output, you must **convert it into a patient-friendly response** in natural, conversational Ukrainian.\n"
+            "   - Ensure that all provided medical details are **explained in simple terms**, avoiding unexplained medical jargon.\n\n"
+
+            "2. **Ensuring Clarity and Guidance:**\n"
+            "   - Organize the response into **logical sections** (e.g., summary of symptoms, possible explanations, recommendations).\n"
+            "   - If the analyst includes **open questions or areas of uncertainty**, guide the patient with specific clarifying questions.\n"
+            "   - If the case is conclusive, provide **clear next steps** (e.g., home care measures, urgency of visiting a doctor, signs to monitor).\n\n"
+
+            "3. **Maintaining Medical Safety Standards:**\n"
+            "   - **NEVER** provide a definitive diagnosis.\n"
+            "   - **ALWAYS** remind the patient that your response is for informational purposes only and does not replace a consultation with a healthcare professional.\n"
+            "   - If symptoms are severe or suggest an emergency, strongly **recommend seeking immediate medical attention**.\n\n"
+
+            "4. **Response Formatting Guidelines:**\n"
+            "   - Respond **exclusively in Ukrainian**.\n"
+            "   - Use **Markdown formatting** for readability:\n"
+            "     * **Bold** for key terms (e.g., **мігрень**, **температура**).\n"
+            "     * *Italic* for examples (e.g., *парацетамол*).\n"
+            "     * Lists to structure recommendations.\n"
+            "     * `---` to separate sections in longer messages.\n"
+            "   - Keep the response natural and conversational, without excessive formality.\n\n"
+
+            "**Your role is to ensure the patient receives a well-structured, clear, and safe response based on the analyst’s reasoning, while maintaining professional medical communication standards.**"
         )
     }
 
 
 
-async def chat(chat_history: List[object]):
-    for token in interact_model(chat_history):
-        if token.type == "message":
-            yield token
-        elif token.type == "reason":
-            logger.debug(f"return reason \n{token.content}")
+
+
+
+async def chat(chat_history: List[dict]):
+    chat_chunks = interact_model(chat_history, get_chat_system_message(), chat_model=True)
+    for token in response_loop(chat_chunks, chat_history):
+        yield token
+
+
+def response_loop(chunk_generator, chat_history: List[dict]):
+    # Process each token in the generator asynchronously
+    for token in chunk_generator:
+        if token.type in ("message", "think"):
+            # Yield direct response tokens immediately
             yield token
         elif token.type == "rag":
-            logger.debug(f"do rag logic \n{token.content}")
+            logger.debug(f"Starting RAG processing for: {token.content}")
 
-            # reason = await rag_logic(token.content, chat_history)
+            complete_reasoning = ""
 
-            async for reason_token in rag_logic(token.content, chat_history):
-                logger.debug(reason_token)
-                yield reason_token
-        elif token.type == "done":
-            logger.debug(f"Execution finished successfully \n{token.content}")
+            # Process RAG sequence
+            for reason_token in rag_logic(token.content, chat_history.copy()):
+                if reason_token.type == "think":
+                    yield reason_token
+                elif reason_token.type == "done":
+                    complete_reasoning = reason_token.content
+                    logger.debug("Reasoning ended", complete_reasoning)
 
-test_rag_query = "[RAG] High temperature, headaches, more then 39"
+            chat_history.append({
+                "role": "system",
+                "content": complete_reasoning
+            })
 
-async def rag_logic(rag_query, chat_history: List[object]):
+            # Generate final answer after RAG processing
+            final_chunks = interact_model(chat_history, get_final_chat_system_message(), chat_model=True)
+            for final_token in response_loop(final_chunks, chat_history):
+                yield final_token
 
-    retrieved_documents = await retrieve_docs(rag_query)
+def rag_logic(rag_query, chat_history: List[object]):
 
-    document_context = [f"Document Name: {document.name} \n Document Content: {document.content}" for document in retrieved_documents]
+    retrieved_documents = retrieve_docs(rag_query)
+
+    add_documents_to_chat_history(retrieved_documents, chat_history)
+
+    logger.debug(f"Chat history: {chat_history}")
+
+    reason_response = interact_model(chat_history, get_reason_system_message(), chat_model=False)
+
+    complete_reasoning = "<think>"
+
+    for token in reason_response:
+        complete_reasoning += token.content
+        if token.type == "think":
+            yield token
+        elif token.type == "rag":
+
+            chat_history.append({
+                "role": "system",
+                "content": complete_reasoning
+            })
+
+            additional_rag_query = token.content
+            additional_documents = retrieve_docs(additional_rag_query)
+
+            existing_doc_names = {doc["name"] for doc in retrieved_documents}
+
+            use_documents = [doc for doc in additional_documents if doc["name"] not in existing_doc_names]
+
+            add_documents_to_chat_history(use_documents, chat_history)
+
+            additional_reason_response = interact_model(chat_history, get_reason_system_message(), chat_model=False)
+
+            for additional_token in additional_reason_response:
+                if additional_token.type == "think":
+                    yield additional_token
+
+    complete_reasoning += "</think>"
+
+    yield TokenObject(type="done", content=complete_reasoning)
+
+
+def add_documents_to_chat_history(documents: List[dict], chat_history: List[object]):
+    document_context = [f"Document Name: {document["name"]} \n Document Content: {document["content"]}" for document in documents]
 
     supporting_documents = "Supporting Documents:\n" + "\n\n".join(document_context)
 
     chat_history.append({"role": "system", "content": supporting_documents})
 
-    logger.debug(f"Chat history: {chat_history}")
 
-    reason_response = interact_model(chat_history, chat_model=False)
-
-    for token in reason_response:
-        logger.debug(token)
-        yield token
-
-    print(reason_response)
-
-
-
-
-async def retrieve_docs(rag_query) -> List[Documents]:
+def retrieve_docs(rag_query) -> List[dict]:
     rag_query = rag_query[5:]
 
-    return await retrieve_similar_documents(rag_query)
-
-
-
-
-
-
-def reasoning_model(prompt):
-    """
-    Функция модели рассуждения.
-    Принимает промпт с запросом и документами, возвращает вывод/рассуждение.
-    """
-    # Здесь должна быть логика обработки промпта и генерации рассуждения.
-    # Для примера возвращаем строку с результатом рассуждения.
-    return "[Рассуждение с извлечёнными документами]"
-
+    return retrieve_similar_documents(rag_query)
 
 
