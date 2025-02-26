@@ -1,10 +1,5 @@
-import asyncio
-import json
+import re
 from typing import List
-
-import requests
-import os
-from dotenv import load_dotenv
 
 import json
 import os
@@ -14,8 +9,7 @@ from loguru import logger
 
 from application.backend.Models.TokenObject import TokenObject
 from application.backend.database.database_functions import retrieve_similar_documents
-from application.backend.database.tables import Documents
-from application.backend.logic.embeddings.model import compute_embedding
+
 
 
 def interact_model(context, system_prompt, chat_model = True):
@@ -41,7 +35,10 @@ def interact_model(context, system_prompt, chat_model = True):
         "model": model,
         "messages": context,
         "include_reasoning": False if chat_model else True,
-        "stream": True
+        "stream": True,
+        'provider': {
+            'sort': 'throughput'
+        }
     }
 
     logger.debug(f"Отправка запроса к OpenRouter: {json.dumps(payload, ensure_ascii=False, indent=2)}")
@@ -75,6 +72,12 @@ def process_chat_response(response):
                 if data == '[DONE]':
                     logger.debug(f"Response Type: {"RAG" if rag_flag else "Chat Response"}")
                     logger.debug(f"Полный ответ от OpenRouter:\n{complete_response}")
+
+                    if "RAG" in complete_response:
+                        rag_flag = True
+                        match = re.search(r"\[RAG\] \{(.*?)\}", complete_response)
+                        complete_response = match.group(0) if match else complete_response
+
                     yield TokenObject(type="rag", content=complete_response) if rag_flag else TokenObject(type="done",
                                                                                                           content=complete_response)
 
@@ -135,7 +138,7 @@ def get_chat_system_message():
         "content": (
             "You are a medical researcher performing systematic differential diagnosis analysis. "
             "Use masculine gender for self-reference when needed but avoid emphasizing gender/personality. "
-            "**Respond exclusively in Ukrainian** using natural conversational language with Markdown, make the conversation natural chat. Greet person and be empatic in first message, in the following dont greet and dont spend too much time on emphatic.\n\n"
+            "**Respond exclusively in Ukrainian** using natural conversational language with Markdown, make the conversation natural chat with emphatic behavior, if greeting is already present in your previous responses, dont repeat it. .\n\n"
 
             "### **STRICT RULES FOR RAG USAGE:**\n"
             "1. **RAG queries must be separate**\n"
@@ -152,36 +155,9 @@ def get_chat_system_message():
             "   - Always advise the user to consult a doctor for proper evaluation.\n\n"
 
             "4. **Response Formatting:**\n"
+            "   - Use different headers (##, ###) to separate logical parts of response and make it readable\n"
             "   - Use **bold** for medical terms (e.g., **мігрень**)\n"
-            "   - Separate responses with `---`\n"
             "   - Maintain gender-neutral 'ви' address\n\n"
-
-            "---\n"
-            "### **Examples: Correct vs Incorrect RAG Behavior**\n"
-            "** Correct RAG Query:** *(Only a RAG query, no extra text)*\n"
-            "```\n"
-            "[RAG] {Висока температура, слабкість, головний біль, м'язовий біль – можливі диференційні діагнози}\n"
-            "```\n"
-            "** Incorrect RAG Query (Forbidden Mixing of Text and RAG):**\n"
-            "```\n"
-            "Ваша температура та головний біль можуть свідчити про інфекційний процес. \n"
-            "[RAG] {Висока температура, слабкість, головний біль, м'язовий біль – можливі диференційні діагнози}\n"
-            "```\n"
-            "** ERROR: `[RAG]` must NEVER appear with normal text in the same response.**\n\n"
-
-            "** Correct Response Without RAG (Standard Answer):**\n"
-            "```\n"
-            "Ваші симптоми можуть бути спричинені вірусною інфекцією або мігренню. \n"
-            "Будь ласка, уточніть:\n"
-            "- Чи є у вас чутливість до світла?\n"
-            "- Як довго триває головний біль?\n"
-            "```\n"
-            "** Incorrect RAG Response (RAG mixed with an answer):**\n"
-            "```\n"
-            "Ймовірно, це вірусна інфекція. Вам потрібно відпочити та стежити за гідратацією.\n"
-            "[RAG] {Температура 38°C, головний біль, слабкість – можливі причини}\n"
-            "```\n"
-            "** ERROR: Mixing `[RAG]` with recommendations is strictly forbidden.**\n\n"
 
             "Failure to follow these rules will cause system errors."
         )
@@ -217,7 +193,7 @@ def get_reason_system_message():
             "   - **Structured Patient Case Summary:**\n"
             "     * **Known Patient Symptoms** (based on available data).\n"
             "     * **Possible Diagnostic Considerations** (without definitive diagnosis).\n"
-            "     * **Key Follow-Up Questions** (to refine potential causes).\n\n"
+            "     * **Key Follow-Up Questions** (to refine potential causes) IMPORTANT the additional questions hould only be added if the reasoning process identifies there is not enough information to help with diagnosis..\n\n"
 
             "5. **If more data is needed:**\n"
             "   - Respond **ONLY** with `[RAG] {query}` without any additional text.\n\n"
@@ -242,9 +218,11 @@ def get_reason_system_message():
             "- **Warning signs requiring immediate attention:** [List of critical symptoms]\n"
             "```\n\n"
             
+            "IMPORTANT ALWAYS REASON IN UKRAINIAN"
+            
             "### **Example of a Structured Final RAG request:**\n"
             "[RAG] Patient reports persistent headache with visual disturbances. Retrieve relevant medical literature on migraine differentials and potential neurological causes."
-
+            "Very important to always reason in Ukrainian to ensure the reasoning is interpretable for Ukrainian users"
             "**Your goal is to critically evaluate data and generate a well-structured medical report.** "
             "If additional data is required, respond **ONLY** with `[RAG] {query}` and nothing else."
         )
@@ -271,11 +249,11 @@ def get_final_chat_system_message():
             "   - If the case is conclusive, provide **clear next steps** (e.g., home care measures, urgency of visiting a doctor, signs to monitor).\n\n"
 
             "3. **Maintaining Medical Safety Standards:**\n"
-            "   - **NEVER** provide a definitive diagnosis.\n"
             "   - **ALWAYS** remind the patient that your response is for informational purposes only and does not replace a consultation with a healthcare professional.\n"
             "   - If symptoms are severe or suggest an emergency, strongly **recommend seeking immediate medical attention**.\n\n"
 
             "4. **Response Formatting Guidelines:**\n"
+            "   - Use different headers (##, ###) to separate logical parts of response and make it readable\n"
             "   - Respond **exclusively in Ukrainian**.\n"
             "   - Use **Markdown formatting** for readability:\n"
             "     * **Bold** for key terms (e.g., **мігрень**, **температура**).\n"
@@ -287,8 +265,6 @@ def get_final_chat_system_message():
             "**Your role is to ensure the patient receives a well-structured, clear, and safe response based on the analyst’s reasoning, while maintaining professional medical communication standards.**"
         )
     }
-
-
 
 
 
@@ -312,7 +288,7 @@ def response_loop(chunk_generator, chat_history: List[dict]):
 
             # Process RAG sequence
             for reason_token in rag_logic(token.content, chat_history.copy()):
-                if reason_token.type == "think":
+                if reason_token.type in ("think", "sup_docs"):
                     yield reason_token
                 elif reason_token.type == "done":
                     complete_reasoning = reason_token.content
@@ -331,6 +307,10 @@ def response_loop(chunk_generator, chat_history: List[dict]):
 def rag_logic(rag_query, chat_history: List[object]):
 
     retrieved_documents = retrieve_docs(rag_query)
+
+    doc_ids = [str(doc["name"]) for doc in retrieved_documents]
+
+    yield TokenObject(type="sup_docs", content=json.dumps(doc_ids))
 
     add_documents_to_chat_history(retrieved_documents, chat_history)
 

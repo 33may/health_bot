@@ -13,37 +13,98 @@ export function useChatWs() {
         };
 
         socket.onmessage = (event: MessageEvent) => {
-
             const data: ChatToken = JSON.parse(event.data);
 
             setMessages((prevMessages) => {
                 const updated = [...prevMessages];
+                const lastMessage =
+                    updated.length > 0 && updated[updated.length - 1].role === "system"
+                        ? updated[updated.length - 1]
+                        : null;
 
-                if (updated.length > 0 && updated[updated.length - 1].role === "system") {
-                    const lastMessage = updated[updated.length - 1];
-                    if (data.type === "message") {
-                        lastMessage.content += data.content;
+                // Helper to ensure document content is an array of strings.
+                const parseDocs = (content: any): string[] => {
+                    let docs: string[] = [];
+                    if (typeof content === "string") {
+                        try {
+                            docs = JSON.parse(content);
+                            if (!Array.isArray(docs)) {
+                                docs = [content];
+                            }
+                        } catch (e) {
+                            docs = [content];
+                        }
+                    } else if (Array.isArray(content)) {
+                        docs = content;
+                    } else {
+                        docs = [String(content)];
                     }
-                    else if (data.type === "think") {
-                        lastMessage.reasoning = lastMessage.reasoning
-                            ? lastMessage.reasoning + data.content
-                            : data.content;
-                    }
-                    else if (data.type === "sup_docs") {
-                        lastMessage.supporting_documents?.push(data.content);
+                    return docs;
+                };
+
+                const isOccupied = (msg: ChatMessage): boolean =>
+                    Boolean(msg.content?.length)
+
+
+                if (lastMessage) {
+                    switch (data.type) {
+                        case "message":
+                            // Always append message content.
+                            lastMessage.content += data.content;
+                            break;
+                        case "think":
+                            if (isOccupied(lastMessage)) {
+                                // Start a new system message if the last one is occupied.
+                                const newMessage: ChatMessage = {role: "system", content: ""};
+                                newMessage.reasoning = data.content;
+                                updated.push(newMessage);
+                            } else {
+                                // Otherwise, append to the existing reasoning.
+                                lastMessage.reasoning = lastMessage.reasoning
+                                    ? lastMessage.reasoning + data.content
+                                    : data.content;
+                            }
+                            break;
+                        case "sup_docs": {
+                            const docs = parseDocs(data.content);
+                            if (isOccupied(lastMessage)) {
+                                const newMessage: ChatMessage = {role: "system", content: ""};
+                                newMessage.supporting_documents = docs;
+                                updated.push(newMessage);
+                            } else {
+                                if (!lastMessage.supporting_documents) {
+                                    lastMessage.supporting_documents = [];
+                                }
+                                lastMessage.supporting_documents.push(...docs);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
                     }
                 } else {
+                    // No existing system message: create a new one.
                     const newMessage: ChatMessage = {role: "system", content: ""};
-                    if (data.type === "message") {
-                        newMessage.content = data.content;
-                    } else if (data.type === "think") {
-                        newMessage.reasoning = data.content;
+                    switch (data.type) {
+                        case "message":
+                            newMessage.content = data.content;
+                            break;
+                        case "think":
+                            newMessage.reasoning = data.content;
+                            break;
+                        case "sup_docs":
+                            newMessage.supporting_documents = parseDocs(data.content);
+                            break;
+                        default:
+                            break;
                     }
                     updated.push(newMessage);
                 }
+
                 return updated;
             });
         };
+
 
         socket.onclose = () => {
             console.log("WebSocket соединение закрыто");
@@ -68,16 +129,16 @@ export function useChatWs() {
                 console.log(updated);
 
                 const chat_context = updated.map((msg) => {
-                const content = msg.reasoning
-                    ? `<think>${msg.reasoning}</think>\n${msg.content}`
-                    : msg.content;
+                    const content = msg.reasoning
+                        ? `<think>${msg.reasoning}</think>\n${msg.content}`
+                        : msg.content;
 
-                return {
-                    role: msg.role,
-                    content: content,
-                } as WSMessage;
-            });
-            ws.send(JSON.stringify(chat_context));
+                    return {
+                        role: msg.role,
+                        content: content,
+                    } as WSMessage;
+                });
+                ws.send(JSON.stringify(chat_context));
 
                 return updated;
             })
